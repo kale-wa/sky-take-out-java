@@ -1,0 +1,53 @@
+spring:
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    # 生产端：开启 confirm 回执 + 路由失败回调
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    # 消费端：手动 ACK，业务成功才确认
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+        concurrency: 2
+        max-concurrency: 4
+        retry:
+          enabled: false
+
+sky:
+  mq:
+    # 订单超时时间，测试用 1 分钟，上线改 1800000（30 分钟）
+    order-timeout-ms: 60000
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    host: localhost
+    port: 3306
+    database: sky_take_out
+    username: root
+    password: 123456
+  alioss:
+    endpoint: oss-cn-beijing.aliyuncs.com
+    access-key-id: your-access-key-id
+    access-key-secret: your-access-key-secret
+    bucket-name: your-bucket-name
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    password: 123456
+    database: 10
+  wechat:
+    appid: your-appid
+    secret: your-app-secret
+    mchid: your-mchid
+    mchSerialNo: your-mch-serial-no
+    privateKeyFilePath: /path/to/apiclient_key.pem
+    apiV3Key: your-api-v3-key
+    weChatPayCertFilePath: /path/to/wechatpay_cert.pem
+    notifyUrl: https://your-domain/notify/paySuccess
+    refundNotifyUrl: https://your-domain/notify/refundSuccess
