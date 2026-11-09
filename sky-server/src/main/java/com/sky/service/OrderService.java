@@ -109,4 +109,10 @@ public interface OrderService {
      * @param id
      */
     void reminder(Long id);
+
+    /**
+     * 订单超时未支付，自动取消（由 RabbitMQ 延迟消息触发）
+     * @param orderId
+     */
+    void cancelTimeoutOrder(Long orderId);
 }

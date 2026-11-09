@@ -14,6 +14,8 @@ import com.sky.exception.AddressBookBusinessException;
 import com.sky.exception.OrderBusinessException;
 import com.sky.exception.ShoppingCartBusinessException;
 import com.sky.mapper.*;
+import com.sky.mq.OrderMessage;
+import com.sky.mq.OrderMessageProducer;
 import com.sky.result.PageResult;
 import com.sky.service.OrderService;
 import com.sky.utils.HttpClientUtil;
@@ -30,6 +32,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -56,6 +60,8 @@ public class OrderServiceImpl implements OrderService {
     private WeChatPayUtil weChatPayUtil;
     @Autowired
     private WebSocketServer webSocketServer;
+    @Autowired
+    private OrderMessageProducer orderMessageProducer;
 
     /**
      * 用户下单
@@ -111,6 +117,19 @@ public class OrderServiceImpl implements OrderService {
 
         //清理购物车中的数据
         shoppingCartMapper.deleteByUserId(userId);
+
+        // ===== RabbitMQ 改造：事务提交后再发消息 =====
+        // 如果在事务中间发送，一旦事务回滚，消息已经发出去了，就会出现“有消息、没订单”。
+        OrderMessage message = new OrderMessage(order.getId(), order.getNumber(), userId);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                // 1. 延迟消息：到期后进入死信交换机，触发超时关单
+                orderMessageProducer.sendOrderDelayClose(message);
+                // 2. 下单事件：异步做通知等非核心逻辑
+                orderMessageProducer.sendOrderCreated(message);
+            }
+        });
 
         //封装返回结果
         OrderSubmitVO orderSubmitVO = OrderSubmitVO.builder()
@@ -528,6 +547,37 @@ public class OrderServiceImpl implements OrderService {
         map.put("content","订单号:"+ordersDB.getNumber());
         //通过websocke向客户端浏览器来推送消息
         webSocketServer.sendToAllClient(JSON.toJSONString(map));
+    }
+
+    /**
+     * 订单超时未支付，自动取消（由 RabbitMQ 延迟消息触发）。
+     *
+     * 这里再做一次状态判断，作为幂等的第二道保险：
+     * 即使同一条消息被处理两次，也只有“待付款”状态会被取消。
+     */
+    @Override
+    @Transactional
+    public void cancelTimeoutOrder(Long orderId) {
+        Orders ordersDB = orderMapper.getById(orderId);
+        if (ordersDB == null) {
+            log.warn("[超时关单] 订单不存在, orderId={}", orderId);
+            return;
+        }
+        // 已支付、已取消、已完成都不处理
+        if (!Orders.PENDING_PAYMENT.equals(ordersDB.getStatus())) {
+            log.info("[超时关单] 订单状态已变更，跳过, orderId={}, status={}", orderId, ordersDB.getStatus());
+            return;
+        }
+
+        Orders orders = Orders.builder()
+                .id(orderId)
+                .status(Orders.CANCELLED)
+                .cancelReason("订单超时未支付，系统自动取消")
+                .cancelTime(LocalDateTime.now())
+                .build();
+        orderMapper.update(orders);
+
+        log.info("[超时关单] 已取消订单 {}", ordersDB.getNumber());
     }
     @Value("${sky.shop.address}")
     private String shopAddress;
